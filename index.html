@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PixelRift Racing Ultimate</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body{margin:0; overflow:hidden; background:#000; font-family:Arial;}
+#splash{position:fixed; inset:0; background:radial-gradient(circle,#0a0a1a,#000); display:flex; align-items:center; justify-content:center; z-index:10; flex-direction:column;}
+#logo{font-size:48px; font-weight:bold; letter-spacing:2px; color:#00eaff; text-shadow:0 0 20px #00eaff; animation:glow 2s infinite alternate;}
+#studio{margin-top:10px; font-size:18px; color:#aaa;}
+@keyframes glow{from{ text-shadow:0 0 10px #00eaff;} to{ text-shadow:0 0 30px #7f00ff;}}
+#speedometer{position:fixed; top:10px; right:10px; color:#0ff; font-size:18px; z-index:5;}
+#searchBox{
+  position:fixed; top:50px; left:50%; transform:translateX(-50%);
+  width:200px; padding:5px; display:none; z-index:5;
+  background:#111; color:#0ff; border:1px solid #0ff; border-radius:5px;
+}
+#hint{position:fixed; bottom:10px; left:50%; transform:translateX(-50%); color:#fff; font-size:14px; opacity:0.8; z-index:5;}
+</style>
+</head>
+<body>
+<div id="splash">
+  <div id="logo">PixelRift</div>
+  <div id="studio">Studio</div>
+</div>
+
+<div id="speedometer">0 km/h</div>
+<div id="hint">W / ↑ تسارع — A D انعطاف — اضغط "/" لفتح البحث</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+let scene,camera,renderer;
+let playerCar,speed=0;
+let keys = {};
+let obstacles = [];
+let aiCars = [];
+let roadSegments = [];
+const roadLength=50;
+let flying=false,flyUsed=false;
+let speedBoost=false;
+
+// ====== الأصوات ======
+const engineSound = new Audio("https://actions.google.com/sounds/v1/vehicles/car_engine_fast.ogg");
+engineSound.loop=true; engineSound.volume=0.1;
+const crashSound = new Audio("https://actions.google.com/sounds/v1/impacts/crash.ogg");
+crashSound.volume=0.6;
+
+// ====== Splash ======
+initSplash();
+function initSplash(){setTimeout(()=>{document.getElementById("splash").style.display="none"; init(); animate(); engineSound.play();},2500);}
+
+// ====== INIT ======
+function init(){
+  scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x000000,10,300);
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight,0.1,500);
+  camera.position.set(0,6,12);
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const light = new THREE.DirectionalLight(0xffffff,1);
+  light.position.set(5,10,5);
+  scene.add(light);
+  scene.add(new THREE.AmbientLight(0x404040));
+
+  // Road
+  for(let i=0;i<10;i++){
+    const segGeo = new THREE.PlaneGeometry(20, roadLength, 1,1);
+    const segMat = new THREE.MeshStandardMaterial({color:0x222222});
+    const segment = new THREE.Mesh(segGeo, segMat);
+    segment.rotation.x=-Math.PI/2;
+    segment.position.z=-i*roadLength;
+    segment.position.x = Math.sin(i*0.5)*3;
+    scene.add(segment);
+    roadSegments.push(segment);
+  }
+
+  // Player Car
+  const carGeo = new THREE.BoxGeometry(1.5,0.7,3);
+  const carMat = new THREE.MeshStandardMaterial({color:0x00eaff});
+  playerCar = new THREE.Mesh(carGeo, carMat);
+  playerCar.position.y=0.5;
+  scene.add(playerCar);
+
+  // Light effect behind car
+  const tailLightGeo = new THREE.ConeGeometry(0.2,0.5,8);
+  const tailLightMat = new THREE.MeshBasicMaterial({color:0xff0000});
+  const tailLight = new THREE.Mesh(tailLightGeo, tailLightMat);
+  tailLight.rotation.x=Math.PI;
+  tailLight.position.set(0,0.3,1.5);
+  playerCar.add(tailLight);
+  playerCar.tailLight = tailLight;
+
+  // Obstacles
+  for(let i=0;i<30;i++){
+    const obsGeo = new THREE.BoxGeometry(1,1,1);
+    const obsMat = new THREE.MeshStandardMaterial({color:0xff0000});
+    const obs = new THREE.Mesh(obsGeo, obsMat);
+    obs.position.set((Math.random()*16)-8,0.5,-Math.random()*800);
+    scene.add(obs);
+    obstacles.push(obs);
+  }
+
+  // AI Cars
+  for(let i=0;i<5;i++){
+    const aiGeo = new THREE.BoxGeometry(1.5,0.7,3);
+    const aiMat = new THREE.MeshStandardMaterial({color:0xffaa00});
+    const ai = new THREE.Mesh(aiGeo, aiMat);
+    ai.position.set((Math.random()*16)-8,0.5,-Math.random()*800-50);
+    scene.add(ai);
+    aiCars.push({mesh:ai, speed:0.5+Math.random()*0.5});
+  }
+
+  // Events
+  window.addEventListener("resize",onResize);
+  window.addEventListener("keydown",e=>{
+    keys[e.key]=true;
+    if(e.key=="/"){toggleSearch();}
+  });
+  window.addEventListener("keyup",e=>keys[e.key]=false);
+}
+
+// ====== Search / Cheat Console ======
+let searchOpen=false;
+const searchBox = document.createElement("input");
+searchBox.id="searchBox"; searchBox.type="text"; searchBox.placeholder="Type command...";
+document.body.appendChild(searchBox);
+
+function toggleSearch(){searchOpen=!searchOpen; searchBox.style.display=searchOpen?"block":"none"; if(searchOpen) searchBox.focus();}
+
+searchBox.addEventListener("keydown",(e)=>{
+  if(e.key=="Enter"){
+    const cmd = searchBox.value.toLowerCase();
+    searchBox.value="";
+    searchOpen=false;
+    searchBox.style.display="none";
+    if(cmd=="fly"){if(!flyUsed){activateFly(); flyUsed=true;} else alert("Fly already used!");}
+    if(cmd=="color"){changeColor();}
+    if(cmd=="rsh"){alert("Cheat / Search Menu");}
+    if(cmd=="speedboost"){activateSpeedBoost();}
+    if(cmd=="reset"){resetPlayer();}
+  }
+});
+
+// ====== Fly ======
+function activateFly(){flying=true; setTimeout(()=>{flying=false;},20000);}
+
+// ====== Speed Boost ======
+function activateSpeedBoost(){speedBoost=true; setTimeout(()=>{speedBoost=false;},5000);}
+
+// ====== Change Color ======
+function changeColor(){playerCar.material.color.setHex(Math.random()*0xffffff);}
+
+// ====== Reset Player ======
+function resetPlayer(){playerCar.position.set(0,0.5,0); speed=0;}
+
+// ====== Update ======
+function update(){
+  // Player Controls
+  if(keys["w"]||keys["ArrowUp"]) speed+=flying?0.1:(speedBoost?0.08:0.03);
+  if(keys["s"]||keys["ArrowDown"]) speed-=0.03;
+  speed*=0.98;
+  speed = THREE.MathUtils.clamp(speed,-1, flying?4:2);
+  playerCar.position.z -= speed;
+  if(keys["a"]||keys["ArrowLeft"]) playerCar.position.x -=0.15;
+  if(keys["d"]||keys["ArrowRight"]) playerCar.position.x +=0.15;
+
+  // Fly effect
+  playerCar.position.y = flying ? 2 : 0.5;
+
+  // Tail light effect for speed
+  const lightIntensity = Math.min(Math.abs(speed)/2,1);
+  playerCar.tailLight.material.color.setHSL(0,1,lightIntensity);
+
+  // Camera with shake
+  let camShake = 0;
+  obstacles.concat(aiCars.map(a=>a.mesh)).forEach(obj=>{
+    if(collision(playerCar,obj)){
+      speed = -speed*0.5;
+      camShake = 0.3;
+      crashSound.play();
+    }
+  });
+  camera.position.x += (playerCar.position.x - camera.position.x)*0.05 + (Math.random()-0.5)*camShake;
+  camera.position.z = playerCar.position.z + 12 + (Math.random()-0.5)*camShake;
+  camera.position.y = 6 + (Math.random()-0.5)*camShake;
+  camera.lookAt(playerCar.position);
+
+  // AI Cars
+  aiCars.forEach(ai=>{
+    ai.mesh.position.z -= ai.speed;
+    obstacles.forEach(obs=>{
+      const dz = obs.position.z - ai.mesh.position.z;
+      const dx = obs.position.x - ai.mesh.position.x;
+      if(dz>0 && dz<5 && Math.abs(dx)<2){ ai.mesh.position.x += (dx>0?-0.1:0.1);}
+    });
+    const diff = playerCar.position.z - ai.mesh.position.z;
+    if(diff<5 && Math.abs(playerCar.position.x - ai.mesh.position.x)<2){
+      ai.mesh.position.x += (ai.mesh.position.x<playerCar.position.x?0.05:-0.05);
+    }
+    if(ai.mesh.position.z > playerCar.position.z + 20){
+      ai.mesh.position.z = playerCar.position.z - 800;
+      ai.mesh.position.x = (Math.random()*16)-8;
+    }
+  });
+
+  // Obstacles
+  obstacles.forEach(obs=>{
+    if(obs.position.z > playerCar.position.z + 20){
+      obs.position.z = playerCar.position.z - 800;
+      obs.position.x = (Math.random()*16)-8;
+    }
+  });
+
+  // Road
+  roadSegments.forEach((seg,i)=>{
+    seg.position.z = -roadLength*i + (playerCar.position.z % roadLength);
+    seg.position.x = Math.sin((playerCar.position.z/roadLength + i*0.5))*3;
+  });
+
+  // Speedometer
+  const kmh = Math.round(speed*120);
+  document.getElementById("speedometer").innerText = kmh + " km/h";
+
+  // Engine sound volume & playbackRate based on speed
+  engineSound.volume = Math.min(Math.abs(speed)/2,0.7);
+  engineSound.playbackRate = 0.5 + Math.abs(speed)/2;
+}
+
+// ====== Collision ======
+function collision(a,b){
+  const aBox = new THREE.Box3().setFromObject(a);
+  const bBox = new THREE.Box3().setFromObject(b);
+  return aBox.intersectsBox(bBox);
+}
+
+// ====== Animate ======
+function animate(){
+  requestAnimationFrame(animate);
+  update();
+  renderer.render(scene,camera);
+}
+
+// ====== Resize ======
+function onResize(){
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+}
+</script>
+</body>
+</html>
